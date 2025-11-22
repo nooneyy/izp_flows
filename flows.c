@@ -4,39 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// #define u_int unsigned int
-// #define WRONG_ARGUMENTS -1
-
-// typedef struct Weights {
-//     float total_bytes_w;
-//     float flow_duration_w;
-//     float avg_interarrival_time_w;
-//     float avg_packet_len_w;
-// } Weights;
-
-// typedef struct Args {
-//     char *input;
-//     u_int n_clusters;
-//     Weights weights;
-// } Args;
-
-// Args *init_args(int argc, char *argv[]) {
-//     Args *args = malloc(sizeof(Args) + strlen(argv[2]));
-
-//     strcpy(args->input, argv[1]);
-//     if (argc == 7) {
-//         args->n_clusters = atoi(argv[2]);
-//         args->weights.total_bytes_w = atof(argv[3]);
-//         args->weights.flow_duration_w = atof(argv[4]);
-//         args->weights.avg_interarrival_time_w = atof(argv[5]);
-//         args->weights.avg_packet_len_w = atof(argv[6]);
-//     } else {
-//         args->n_clusters = 0;
-//     }
-
-//     return args;
-// }
-
 typedef struct Flow {
     unsigned int flow_id;
     unsigned int total_bytes;
@@ -52,10 +19,63 @@ typedef struct Cluster {
 } Cluster;
 
 typedef struct ClusterArray {
-    unsigned int capacity;
     unsigned int length;
     Cluster **items;
 } ClusterArray;
+
+unsigned int get_min_flow_id(Cluster *cluster) {
+    unsigned int min_flow_id = cluster->flows[0].flow_id;
+
+    for (unsigned int idx = 1; idx < cluster->flow_count; idx++) {
+        unsigned int curr_flow_id = cluster->flows[idx].flow_id;
+        if (curr_flow_id < min_flow_id) {
+            min_flow_id = curr_flow_id;
+        }
+    }
+
+    return min_flow_id;
+}
+
+int qsort_flow_cmp(const void *a, const void *b) {
+    Flow *flow_1 = (Flow *)a;
+    Flow *flow_2 = (Flow *)b;
+
+    return (flow_1->flow_id - flow_2->flow_id);
+}
+
+void sort_flows_in_cluster(Cluster *cluster) {
+    qsort(cluster->flows, cluster->flow_count, sizeof(Flow), qsort_flow_cmp);
+}
+
+int qsort_cluster_cmp(const void *a, const void *b) {
+    Cluster **cluster_1 = (Cluster **)a;
+    Cluster **cluster_2 = (Cluster **)b;
+    return get_min_flow_id(*cluster_1) - get_min_flow_id(*cluster_2);
+}
+
+void sort_cluster_arr(ClusterArray *cluster_arr) {
+    for (unsigned int idx = 0; idx < cluster_arr->length; idx++) {
+        sort_flows_in_cluster(cluster_arr->items[idx]);
+    }
+
+    qsort(cluster_arr->items, cluster_arr->length, sizeof(Cluster *),
+          qsort_cluster_cmp);
+}
+
+void print_results(ClusterArray *cluster_arr) {
+    sort_cluster_arr(cluster_arr);
+    printf("Clusters: \n");
+    for (unsigned int idx = 0; idx < cluster_arr->length; idx++) {
+        Cluster *current_cluster = cluster_arr->items[idx];
+        printf("cluster %d: ", idx);
+        for (unsigned int idx2 = 0; idx2 < current_cluster->flow_count;
+             idx2++) {
+            printf("%d", current_cluster->flows[idx2].flow_id);
+            (idx2 == current_cluster->flow_count - 1) ? printf("\n")
+                                                      : printf(" ");
+        }
+    }
+}
 
 double wtd_euclidian_dist(Flow flow_1, Flow flow_2, double wb, double wt,
                           double wd, double ws) {
@@ -71,8 +91,8 @@ double wtd_euclidian_dist(Flow flow_1, Flow flow_2, double wb, double wt,
                 wd * avg_interarrival_time_diff + ws * avg_packet_len_diff);
 }
 
-double minimum_cluster_distance(Cluster *cluster_1, Cluster *cluster_2,
-                                double wb, double wt, double wd, double ws) {
+double calc_min_cluster_distance(Cluster *cluster_1, Cluster *cluster_2,
+                                 double wb, double wt, double wd, double ws) {
     double min_dist = DBL_MAX;
     for (unsigned int idx = 0; idx < cluster_1->flow_count; idx++) {
         for (unsigned int idx2 = 0; idx2 < cluster_2->flow_count; idx2++) {
@@ -84,7 +104,7 @@ double minimum_cluster_distance(Cluster *cluster_1, Cluster *cluster_2,
         }
     }
     return min_dist;
-};
+}
 
 Cluster *init_cluster(unsigned int flow_count) {
     Cluster *new_cluster = malloc(sizeof(Cluster));
@@ -104,26 +124,27 @@ void free_cluster(Cluster *cluster) {
     free(cluster);
 }
 
-Cluster *merge_clusters(Cluster *cluster_1, Cluster *cluster_2) {
-    Cluster *new_cluster =
-        init_cluster(cluster_1->flow_count + cluster_2->flow_count);
+void merge_clusters(ClusterArray *cluster_arr, Cluster *cluster_1,
+                    unsigned int cluster_2_idx) {
+    Cluster *cluster_2 = cluster_arr->items[cluster_2_idx];
+    cluster_1->flows = realloc(
+        cluster_1->flows,
+        (sizeof(Flow) * (cluster_1->flow_count + cluster_2->flow_count)));
 
-    if (new_cluster != NULL && new_cluster->flows != NULL) {
-        new_cluster->flow_count = cluster_1->flow_count + cluster_2->flow_count;
-
-        for (unsigned int c1_idx = 0; c1_idx < cluster_1->flow_count;
-             c1_idx++) {
-            new_cluster->flows[c1_idx] = cluster_1->flows[c1_idx];
-        }
-
-        for (unsigned int c2_idx = 0; c2_idx < cluster_2->flow_count;
-             c2_idx++) {
-            new_cluster->flows[c2_idx + cluster_1->flow_count] =
-                cluster_1->flows[c2_idx];
-        }
+    for (unsigned int idx = 0; idx < cluster_2->flow_count; idx++) {
+        cluster_1->flows[cluster_1->flow_count + idx] = cluster_2->flows[idx];
     }
 
-    return new_cluster;
+    cluster_1->flow_count += cluster_2->flow_count;
+
+    free_cluster(cluster_2);
+    for (unsigned int idx = cluster_2_idx; idx < cluster_arr->length - 1;
+         idx++) {
+        cluster_arr->items[idx] = cluster_arr->items[idx + 1];
+    }
+
+    cluster_arr->items[cluster_arr->length - 1] = NULL;
+    cluster_arr->length--;
 }
 
 void free_cluster_arr(ClusterArray *cluster_arr) {
@@ -134,13 +155,44 @@ void free_cluster_arr(ClusterArray *cluster_arr) {
     free(cluster_arr);
 }
 
-void merge_closest_clusters(ClusterArray *cluster_arr) {
+void merge_closest_clusters(ClusterArray *cluster_arr, double wb, double wt,
+                            double wd, double ws) {
+    double minimum_cluster_distance = DBL_MAX;
+    Cluster *closest_cluster_1 = NULL;
+    unsigned int closest_cluster_2_idx;
 
-    for (unsigned int idx = 0; idx < cluster_arr->length; idx++) {
+    for (unsigned int c1_idx = 0; c1_idx < cluster_arr->length; c1_idx++) {
+        Cluster *cluster_1 = cluster_arr->items[c1_idx];
+        for (unsigned int c2_idx = c1_idx + 1; c2_idx < cluster_arr->length;
+             c2_idx++) {
+            Cluster *cluster_2 = cluster_arr->items[c2_idx];
+            double c_dist =
+                calc_min_cluster_distance(cluster_1, cluster_2, wb, wt, wd, ws);
+            if (c_dist < minimum_cluster_distance) {
+                minimum_cluster_distance = c_dist;
+                closest_cluster_1 = cluster_1;
+                closest_cluster_2_idx = c2_idx;
+            }
+        }
+    }
+
+    if (minimum_cluster_distance < DBL_MAX && closest_cluster_1) {
+        merge_clusters(cluster_arr, closest_cluster_1, closest_cluster_2_idx);
+    } else {
+        printf("error? nothing to merge");
     }
 }
 
-int process_input(char *src) {
+ClusterArray *cluster_arr_init(int length) {
+    ClusterArray *cluster_arr = malloc(sizeof(ClusterArray));
+    cluster_arr->length = length;
+    cluster_arr->items = malloc(sizeof(Cluster *) * cluster_arr->length);
+
+    return cluster_arr;
+}
+
+int process_input(char *src, unsigned int n_clusters, double wb, double wt,
+                  double wd, double ws) {
     FILE *input_file = fopen(src, "r");
 
     if (input_file == NULL) {
@@ -153,11 +205,9 @@ int process_input(char *src) {
         return -5;
     }
 
-    ClusterArray *cluster_arr = malloc(sizeof(Cluster));
-    cluster_arr->length = atoi(&(line_buffer[6]));
-    cluster_arr->capacity = cluster_arr->length;
+    int flow_n = atoi(&(line_buffer[6]));
 
-    cluster_arr->items = malloc(sizeof(Cluster *) * cluster_arr->length);
+    ClusterArray *cluster_arr = cluster_arr_init(flow_n);
 
     for (unsigned int idx = 0; idx < cluster_arr->length; idx++) {
         Cluster *single_flow_cluster = init_cluster(1);
@@ -200,6 +250,12 @@ int process_input(char *src) {
     //            flow_on_idx.avg_packet_len);
     // }
 
+    while (cluster_arr->length > n_clusters && n_clusters != 0) {
+        merge_closest_clusters(cluster_arr, wb, wt, wd, ws);
+    }
+
+    print_results(cluster_arr);
+
     free_cluster_arr(cluster_arr);
     fclose(input_file);
     return 0;
@@ -213,7 +269,7 @@ int main(int argc, char *argv[]) {
     }
 
     char *input = argv[1];
-    unsigned int n_clusters = 0;
+    int n_clusters = 0;
     double wb = 0, wt = 0, wd = 0, ws = 0;
 
     if (argc == 7) {
@@ -234,10 +290,5 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("input: %s, clusters: %d, wb: %f, wt: %f, wd: %f, ws: %f\n", input,
-           n_clusters, wb, wt, wd, ws);
-
-    process_input(input);
-
-    return 0;
+    return process_input(input, n_clusters, wb, wt, wd, ws);
 }
